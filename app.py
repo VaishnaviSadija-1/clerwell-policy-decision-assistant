@@ -11,7 +11,7 @@ import os
 from dotenv import load_dotenv
 
 from backend.analyzer import Analyzer
-from backend.llm import OpenAICompatClient
+from backend.llm import default_client
 from backend.retrieval import PolicyIndex
 from backend.store import RequestStore
 
@@ -49,7 +49,7 @@ def create_api(llm_client=None) -> Api:
     """
     store = RequestStore(REQUESTS_PATH)
     index = PolicyIndex(POLICIES_DIR)
-    analyzer = Analyzer(store, index, llm_client or OpenAICompatClient())
+    analyzer = Analyzer(store, index, llm_client or default_client())
     return Api(store, analyzer)
 
 

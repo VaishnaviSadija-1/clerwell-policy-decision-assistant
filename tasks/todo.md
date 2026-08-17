@@ -35,4 +35,4 @@ editing the tests.
 - **Per-task commits** pushed to GitHub (private repo
   `VaishnaviSadija-1/clerwell-policy-decision-assistant`).
 - **Left for the candidate:** record the 3–5 min demo, flip the repo public for
-  submission, and set a real `.env` to demo against a live model (Ollama works).
+  submission, and set a real `.env` to demo against a live model (Claude API).

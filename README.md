@@ -37,34 +37,27 @@ a platform-appropriate rendering backend automatically:
 | `pydantic` | Typed, validated `AnalysisResult` schema (v2) |
 | `python-dotenv` | Loads `.env` for LLM provider configuration |
 | `pytest` | Automated test suite |
-| `requests` | HTTP calls to the OpenAI-compatible chat-completions endpoint |
+| `requests` | HTTP calls for the optional OpenAI-compatible client |
+| `anthropic` | Official Anthropic SDK — the default Claude API client |
 
 No vector database or heavyweight ML/embedding library is used — see
 [Retrieval approach](#5-retrieval-approach).
 
 ## 3. Model/provider configuration
 
-Copy `.env.example` to `.env` and fill in your provider:
+The app uses the **Anthropic Claude API** (model `claude-haiku-4-5`) through
+the official `anthropic` SDK. Copy `.env.example` to `.env` and set your key:
 
 ```bash
-LLM_BASE_URL=https://api.openai.com/v1
-LLM_API_KEY=your-api-key-here
-LLM_MODEL=gpt-4o-mini
+ANTHROPIC_API_KEY=your-anthropic-api-key-here
+LLM_MODEL=claude-haiku-4-5
 LLM_TIMEOUT_SECONDS=45
 ```
 
-Any **OpenAI-compatible** chat-completions endpoint works — hosted (OpenAI,
-Groq, Together, etc.) or local. For **Ollama**, run a model locally and set:
-
-```bash
-LLM_BASE_URL=http://localhost:11434/v1
-LLM_API_KEY=ollama
-LLM_MODEL=llama3.1
-```
-
-`backend/llm.py` reads these four variables (`LLM_BASE_URL`, `LLM_API_KEY`,
-`LLM_MODEL`, `LLM_TIMEOUT_SECONDS`) via `python-dotenv`, with constructor
-arguments taking priority over env vars for testability. If no provider is
+`backend/llm.py` reads these variables via `python-dotenv`, with constructor
+arguments taking priority over env vars for testability. An
+`OpenAICompatClient` for any OpenAI-compatible `/chat/completions` endpoint is
+also included and can be injected via `create_api(llm_client=...)`. If no provider is
 reachable, the app never crashes — `analyze()` returns
 `{"ok": false, "error": "Language model unavailable — check provider settings and try again."}`,
 which the UI renders as a readable error state with a "Try again" button.
