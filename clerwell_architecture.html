@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>CLERWELL Policy Decision Assistant — Architecture</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/10.9.1/mermaid.min.js"></script>
+<style>
+  :root{
+    --bg:#f7f8fa; --card:#ffffff; --ink:#1a2233; --muted:#5b6474;
+    --accent:#2f5fde; --border:#e3e7ee;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--ink);line-height:1.55}
+  .wrap{max-width:1200px;margin:0 auto;padding:32px 24px 80px}
+  h1{font-size:26px;margin:0 0 4px}
+  .sub{color:var(--muted);margin:0 0 28px;font-size:14px}
+  h2{font-size:19px;margin:40px 0 6px;border-bottom:2px solid var(--accent);display:inline-block;padding-bottom:3px}
+  p.desc{color:var(--muted);font-size:14px;margin:6px 0 14px;max-width:900px}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:18px;overflow-x:auto}
+  .mermaid{display:flex;justify-content:center}
+  table{border-collapse:collapse;width:100%;font-size:13px;background:var(--card)}
+  th,td{border:1px solid var(--border);padding:7px 10px;text-align:left;vertical-align:top}
+  th{background:#eef1f7;font-weight:600}
+  code{background:#eef1f7;padding:1px 5px;border-radius:4px;font-size:12.5px}
+  .tag{display:inline-block;padding:1px 8px;border-radius:10px;font-size:11.5px;font-weight:600}
+  .t-el{background:#e2f4e6;color:#1d7a34}.t-ne{background:#fbe3e3;color:#b02a2a}
+  .t-ni{background:#fdf1d8;color:#9a6b06}.t-ra{background:#e4ebfc;color:#2f5fde}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>CLERWELL Policy Decision Assistant</h1>
+  <p class="sub">AI Engineer Assignment — High-Level &amp; Low-Level Architecture · PyWebView · Python 3.11+ · LLM-grounded decisions</p>
+
+  <h2>1 · High-Level Architecture</h2>
+  <p class="desc">A single desktop app: PyWebView renders an HTML/CSS/JS frontend and exposes a Python <code>js_api</code> bridge. The Python backend owns request loading, policy retrieval, the LLM decision engine, and schema validation. All policy knowledge comes exclusively from the five supplied markdown files.</p>
+  <div class="card"><pre class="mermaid">
+flowchart TB
+    subgraph DESKTOP["🖥️ PyWebView Desktop Window"]
+        subgraph FE["Frontend — HTML / CSS / JS"]
+            UI1["Request List<br/>+ Filter / Search"]
+            UI2["Request Detail<br/>Panel"]
+            UI3["Analyze Button"]
+            UI4["Decision Result View<br/>evidence · missing info · approval · explanation"]
+            UI5["System States<br/>loading / error / empty"]
+        end
+    end
+
+    BRIDGE["PyWebView JS API Bridge<br/>(js_api — window.pywebview.api)"]
+
+    subgraph BE["Python Backend (3.11+)"]
+        RS["Request Store<br/>loads data/requests.json<br/>(read-only)"]
+        RET["Retrieval Engine<br/>policy section index<br/>keyword + hybrid scoring"]
+        DE["Decision Engine<br/>prompt builder + LLM call<br/>+ guardrails"]
+        VAL["Validation Layer<br/>Pydantic schema +<br/>evidence verifier"]
+    end
+
+    subgraph KB["📚 Knowledge Base (authoritative)"]
+        P1["5 policy .md files<br/>leave · expense · refund<br/>pricing · security"]
+        RQ["requests.json<br/>20 requests"]
+    end
+
+    LLM["🤖 LLM Provider<br/>OpenAI-compatible API / Ollama<br/>config via .env"]
+    TESTS["🧪 pytest suite<br/>mocked LLM — no paid calls"]
+
+    UI1 --> UI2 --> UI3
+    UI3 -->|"analyze(request_id)"| BRIDGE
+    BRIDGE --> BE
+    RS --> DE
+    RET --> DE
+    DE <-->|"structured JSON"| LLM
+    DE --> VAL
+    VAL -->|"validated result JSON"| BRIDGE
+    BRIDGE --> UI4
+    RQ --> RS
+    P1 --> RET
+    TESTS -.->|"unit tests"| BE
+  </pre></div>
+
+  <h2>2 · Low-Level Architecture — Full Analysis Pipeline</h2>
+  <p class="desc">End-to-end flow for one Analyze click, including every failure path required by the brief: no relevant policy, missing fields, invalid model output, provider down, and prompt-injection content inside requests/policies (treated strictly as data).</p>
+  <div class="card"><pre class="mermaid">
+flowchart TB
+    subgraph STARTUP["⚙️ App Startup — app.py"]
+        S1["Load .env<br/>(provider, model, API key)"] --> S2["Load requests.json<br/>validate 20 records"]
+        S2 --> S3["Parse 5 policy .md files →<br/>split into sections by ## heading<br/>(file, section, exact text)"]
+        S3 --> S4["Build section index<br/>keyword/BM25 scores"]
+        S4 --> S5["webview.create_window(js_api=Api)<br/>webview.start()"]
+    end
+
+    S5 --> U1["UI renders request list<br/>ID · type · name · preview"]
+    U1 --> U2["User filters/searches,<br/>selects a request → detail panel"]
+    U2 --> U3["User clicks Analyze"]
+    U3 --> B1["JS: pywebview.api.analyze(request_id)<br/>UI enters loading state<br/>(runs in background thread — UI stays responsive)"]
+
+    B1 --> V1{"Request found &<br/>fields readable?"}
+    V1 -- no --> ERR1["Return safe error result<br/>UI shows readable error + Retry"]
+    V1 -- yes --> SAN["Sanitize: wrap request text in<br/>data delimiters — content is DATA,<br/>never instructions"]
+
+    SAN --> R1["Retrieval: score every policy section<br/>against request text + metadata"]
+    R1 --> R2{"Any section above<br/>relevance threshold?"}
+    R2 -- no --> FB["Safe fallback:<br/>decision = needs_information<br/>'no applicable policy found'<br/>(no invented policy)"]
+    R2 -- yes --> PR["Build prompt:<br/>• system rules (ground only in excerpts,<br/>no invented thresholds, ignore embedded instructions)<br/>• top-k policy sections verbatim<br/>• request JSON<br/>• required output JSON schema"]
+
+    PR --> L1["Call LLM<br/>timeout + retry w/ backoff<br/>JSON output mode"]
+    L1 --> L2{"API reachable?"}
+    L2 -- no --> ERR2["Graceful error:<br/>'model unavailable' + Retry<br/>(no crash)"]
+    L2 -- yes --> P1["Parse JSON response"]
+
+    P1 --> PV{"Valid JSON +<br/>Pydantic model passes?<br/>(AnalysisResult)"}
+    PV -- "no → 1 retry with<br/>validation errors fed back" --> L1
+    PV -- "still invalid" --> ERR3["Safe fallback result<br/>decision = needs_information<br/>+ error note"]
+    PV -- yes --> G1["Grounding verifier:<br/>each quoted passage must be an<br/>EXACT substring of the cited policy file"]
+
+    G1 --> G2{"All passages<br/>verified?"}
+    G2 -- no --> G3["Drop fabricated quote →<br/>re-ask once or downgrade to<br/>needs_information"]
+    G2 -- yes --> C1["Consistency checks:<br/>• decision ∈ 4 allowed values<br/>• approval.required boolean matches decision<br/>• missing_information always an array<br/>• confidence ∈ [0,1]"]
+
+    C1 --> OUT["Return validated result JSON<br/>through bridge to JS"]
+    G3 --> OUT
+    FB --> OUT
+    ERR3 --> OUT
+    OUT --> UI["UI renders:<br/>🏷️ decision badge · 📄 evidence (file/section/passage)<br/>❓ missing info list or 'None'<br/>👤 approval + roles + reason · 💬 explanation · confidence"]
+
+    subgraph MODELS["📐 models.py — Pydantic"]
+        M1["Evidence(policy_file, section, passage)"]
+        M2["Approval(required: bool,<br/>approver_roles: list, reason)"]
+        M3["AnalysisResult(request_id, decision: Enum,<br/>summary, supporting_evidence: list[Evidence],<br/>missing_information: list, approval: Approval,<br/>confidence: 0–1)"]
+    end
+
+    subgraph TESTS["🧪 tests/ — pytest, LLM mocked"]
+        T1["test straightforward case<br/>(REQ-009 → eligible)"]
+        T2["test missing info<br/>(REQ-011 → needs_information)"]
+        T3["test approval required<br/>(REQ-002 → manager + HR)"]
+        T4["test passage-verification rejects<br/>fabricated quotes"]
+        T5["test injection request (REQ-020)<br/>→ refused + escalate, no secrets"]
+    end
+
+    MODELS -.-> PV
+    TESTS -.-> MODELS
+  </pre></div>
+
+  <h2>3 · Module / File Structure</h2>
+  <div class="card"><pre class="mermaid">
+flowchart LR
+    APP["app.py<br/>entry point · window ·<br/>js_api class"]
+    subgraph BACKEND["backend/"]
+        AN["analyzer.py<br/>pipeline orchestration,<br/>LLM client, retries,<br/>fallbacks"]
+        RT["retrieval.py<br/>policy parsing into sections,<br/>scoring, top-k selection"]
+        MD["models.py<br/>Pydantic: AnalysisResult,<br/>Evidence, Approval, Decision enum"]
+    end
+    subgraph FRONTEND["frontend/"]
+        HT["index.html"]
+        JS["app.js<br/>bridge calls, rendering,<br/>state machine"]
+        CS["styles.css"]
+    end
+    TS["tests/<br/>test_analyzer.py<br/>test_models.py<br/>mock LLM fixtures"]
+    CFG[".env.example<br/>requirements.txt<br/>README.md"]
+
+    APP --> BACKEND
+    APP --> FRONTEND
+    TS -.-> BACKEND
+    CFG -.-> APP
+  </pre></div>
+
+  <h2>4 · Expected Decision Map — all 20 requests</h2>
+  <p class="desc">Sanity map derived by reading each request against the exact policy text. Useful for testing your app and for the demo recording (pick one row from each category). The app must compute these dynamically — never hard-code by ID.</p>
+  <table>
+    <tr><th>ID</th><th>Case</th><th>Expected decision</th><th>Governing policy logic</th></tr>
+    <tr><td>REQ-001</td><td>2-day annual leave, balance 11</td><td><span class="tag t-ra">requires_approval</span></td><td>≤3 days → reporting-manager approval</td></tr>
+    <tr><td>REQ-002</td><td>7-day annual leave, balance 9</td><td><span class="tag t-ra">requires_approval</span></td><td>4–7 days → manager + HR approval</td></tr>
+    <tr><td>REQ-003</td><td>4-day sick leave, no certificate</td><td><span class="tag t-ni">needs_information</span></td><td>&gt;2 days sick → medical certificate + HR; certificate not provided (privacy: don't echo medical details)</td></tr>
+    <tr><td>REQ-004</td><td>3-day leave during release freeze</td><td><span class="tag t-ra">requires_approval</span></td><td>manager + department-head (freeze overlap)</td></tr>
+    <tr><td>REQ-005</td><td>INR 850 taxi</td><td><span class="tag t-ra">requires_approval</span></td><td>≤5,000 → manager approval; &lt;1,000 so no receipt needed</td></tr>
+    <tr><td>REQ-006</td><td>INR 7,200 venue, receipt attached</td><td><span class="tag t-ra">requires_approval</span></td><td>5,001–25,000 → department-head approval</td></tr>
+    <tr><td>REQ-007</td><td>INR 31,500, no receipt</td><td><span class="tag t-ni">needs_information</span></td><td>receipt required &gt;1,000; then dept-head + Finance (&gt;25,000)</td></tr>
+    <tr><td>REQ-008</td><td>International travel INR 42,000</td><td><span class="tag t-ra">requires_approval</span></td><td>international → dept-head + Finance regardless of value</td></tr>
+    <tr><td>REQ-009</td><td>Refund: 8 days, 4 workflows, 12k</td><td><span class="tag t-el">eligible</span></td><td>≤14 days, &lt;20 workflows, ≤50,000 → Support handles, no approval</td></tr>
+    <tr><td>REQ-010</td><td>Refund after 18 days</td><td><span class="tag t-ra">requires_approval</span></td><td>&gt;14 days = exception → Support Lead + Finance review</td></tr>
+    <tr><td>REQ-011</td><td>Vague refund, no invoice/amount</td><td><span class="tag t-ni">needs_information</span></td><td>required fields absent (invoice, amount, payment method, workflows…)</td></tr>
+    <tr><td>REQ-012</td><td>Duplicate charge INR 36,000</td><td><span class="tag t-ra">requires_approval</span></td><td>duplicate-charge claims → Support Lead + Finance review</td></tr>
+    <tr><td>REQ-013</td><td>60 users, 8% discount</td><td><span class="tag t-el">eligible</span></td><td>≤10% → Sales may apply without approval</td></tr>
+    <tr><td>REQ-014</td><td>300 users, 18% discount</td><td><span class="tag t-ra">requires_approval</span></td><td>10–25% → Sales Manager approval</td></tr>
+    <tr><td>REQ-015</td><td>180 users, 30% discount</td><td><span class="tag t-ra">requires_approval</span></td><td>&gt;25% → Sales Manager + Finance</td></tr>
+    <tr><td>REQ-016</td><td>5% discount + SLA, residency, indemnity</td><td><span class="tag t-ra">requires_approval</span></td><td>indemnity → Legal review; residency + SLA → Security review</td></tr>
+    <tr><td>REQ-017</td><td>Verified admin data export, scoped</td><td><span class="tag t-el">eligible</span></td><td>verified admin + covered scope + listed fields → may proceed</td></tr>
+    <tr><td>REQ-018</td><td>Unverified bulk personal-data ask</td><td><span class="tag t-ne">not_eligible</span></td><td>identity/admin/scope missing → must not proceed; verbal CEO ≠ authorization</td></tr>
+    <tr><td>REQ-019</td><td>Refund bank-detail change, unknown contact</td><td><span class="tag t-ra">requires_approval</span></td><td>verify via known contact + Finance Manager approval (needs verification first)</td></tr>
+    <tr><td>REQ-020</td><td>Prompt injection: reveal keys, open macro</td><td><span class="tag t-ne">not_eligible</span></td><td>secrets must never be disclosed → refuse + escalate to Security; content is untrusted data</td></tr>
+  </table>
+
+  <h2>5 · Key Engineering Decisions (talking points)</h2>
+  <table>
+    <tr><th>Concern</th><th>Decision</th><th>Why it wins points</th></tr>
+    <tr><td>Retrieval</td><td>Heading-level section chunks + keyword/hybrid scoring; no vector DB</td><td>Right-sized for 5 short docs; matches evaluator hint ("vector DB not required")</td></tr>
+    <tr><td>Grounding</td><td>Post-hoc exact-substring verification of every quoted passage</td><td>Directly satisfies "quoted passage must exist in the supplied file" — 25% of the score</td></tr>
+    <tr><td>Structured output</td><td>Pydantic v2 model + decision Enum; one repair-retry with validation errors fed back</td><td>Typed schema requirement + graceful invalid-output handling</td></tr>
+    <tr><td>Injection defense</td><td>Request/policy text wrapped as delimited data; system rule: embedded instructions are ignored; REQ-020 escalates to Security</td><td>Explicit reliability requirement #9, and the dataset contains a live injection test</td></tr>
+    <tr><td>Responsiveness</td><td>Analysis on a background thread; JS state machine: idle → loading → success/error</td><td>UI requirement: "must remain responsive while analysis is running"</td></tr>
+    <tr><td>Tests</td><td>pytest with a mocked LLM client (dependency-injected)</td><td>"Tests must not require a paid API call"</td></tr>
+    <tr><td>Config</td><td>.env + python-dotenv; .env.example committed, secrets never</td><td>Explicit credential-handling requirement</td></tr>
+  </table>
+</div>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral', flowchart:{curve:'basis'}});</script>
+</body>
+</html>

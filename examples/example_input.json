@@ -1,0 +1,11 @@
+{
+  "request_id": "EXAMPLE-001",
+  "submitted_at": "2026-08-17T08:00:00+05:30",
+  "requester_type": "employee",
+  "requester": "Example Employee",
+  "request_text": "EMP-0001 requests two days of annual leave. Balance is ten days and reporting manager is Example Manager.",
+  "metadata": {
+    "leave_type": "annual",
+    "working_days": 2
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "request_id": "EXAMPLE-001",
+  "decision": "requires_approval",
+  "summary": "The request is within the stated leave balance but requires reporting-manager approval.",
+  "supporting_evidence": [
+    {
+      "policy_file": "employee_leave_policy.md",
+      "section": "Annual leave",
+      "passage": "Up to 3 consecutive working days requires reporting-manager approval."
+    }
+  ],
+  "missing_information": [
+    "start_date",
+    "end_date"
+  ],
+  "approval": {
+    "required": true,
+    "approver_roles": [
+      "reporting_manager"
+    ],
+    "reason": "The request is for two consecutive working days."
+  },
+  "confidence": 0.9
+}
