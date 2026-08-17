@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>CLERWELL Policy Decision Assistant</title>
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+<div class="app">
+
+  <header class="app-header">
+    <h1>CLERWELL <span>Policy Decision Assistant</span></h1>
+    <div id="header-status" class="header-status" aria-live="polite"></div>
+  </header>
+
+  <main class="app-body">
+
+    <!-- LEFT: request list -->
+    <section class="pane pane-list" aria-label="Requests">
+      <div class="list-controls">
+        <input
+          id="search-input"
+          type="search"
+          placeholder="Search request text or requester…"
+          autocomplete="off"
+        />
+        <div class="filter-row" role="group" aria-label="Filter by requester type">
+          <button type="button" class="filter-chip is-active" data-filter="all">All</button>
+          <button type="button" class="filter-chip" data-filter="employee">Employee</button>
+          <button type="button" class="filter-chip" data-filter="customer">Customer</button>
+        </div>
+      </div>
+      <div id="request-list" class="request-list" role="listbox" aria-label="Request list"></div>
+      <div id="list-empty" class="list-empty hidden">No requests match your search.</div>
+    </section>
+
+    <!-- MIDDLE: request detail -->
+    <section class="pane pane-detail" aria-label="Request detail">
+      <div id="detail-empty" class="empty-state">
+        <p>Select a request from the list to view its details.</p>
+      </div>
+
+      <div id="detail-content" class="detail-content hidden">
+        <div class="detail-heading">
+          <div>
+            <h2 id="detail-id"></h2>
+            <div class="detail-sub">
+              <span id="detail-type-badge" class="type-badge"></span>
+              <span id="detail-requester"></span>
+              <span id="detail-submitted" class="detail-submitted"></span>
+            </div>
+          </div>
+          <button id="analyze-btn" type="button" class="analyze-btn">
+            <span class="analyze-btn-label">Analyze</span>
+            <span class="spinner hidden" aria-hidden="true"></span>
+          </button>
+        </div>
+
+        <div class="detail-block">
+          <h3>Request text</h3>
+          <p id="detail-text" class="detail-text"></p>
+        </div>
+
+        <div class="detail-block">
+          <h3>Metadata</h3>
+          <table id="detail-metadata" class="metadata-table"></table>
+        </div>
+      </div>
+    </section>
+
+    <!-- RIGHT: result panel -->
+    <section class="pane pane-result" aria-label="Analysis result">
+      <h3 class="pane-title">Decision</h3>
+
+      <div id="result-empty" class="empty-state small">
+        <p>No analysis yet.</p>
+      </div>
+
+      <div id="result-loading" class="result-loading hidden">
+        <span class="spinner" aria-hidden="true"></span>
+        <p>Analyzing request against policy…</p>
+      </div>
+
+      <div id="result-error" class="result-error hidden">
+        <p id="result-error-message"></p>
+        <button id="retry-btn" type="button" class="retry-btn">Try again</button>
+      </div>
+
+      <div id="result-content" class="result-content hidden">
+        <div class="result-decision-row">
+          <span id="decision-badge" class="decision-badge"></span>
+          <div class="confidence-wrap">
+            <span class="confidence-label">Confidence</span>
+            <div class="confidence-meter">
+              <div id="confidence-fill" class="confidence-fill"></div>
+            </div>
+            <span id="confidence-value" class="confidence-value"></span>
+          </div>
+        </div>
+
+        <div class="result-block">
+          <h4>Summary</h4>
+          <p id="result-summary"></p>
+        </div>
+
+        <div class="result-block">
+          <h4>Supporting evidence</h4>
+          <div id="result-evidence" class="evidence-list"></div>
+        </div>
+
+        <div class="result-block">
+          <h4>Missing information</h4>
+          <div id="result-missing" class="missing-list"></div>
+        </div>
+
+        <div class="result-block">
+          <h4>Approval</h4>
+          <div id="result-approval" class="approval-block"></div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
