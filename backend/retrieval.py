@@ -144,7 +144,7 @@ class PolicyIndex:
         n_containing = self._df.get(term, 0)
         return math.log((self._n_sections + 1) / (n_containing + 1)) + 1.0
 
-    def search(self, query: str, metadata: dict | None = None, top_k: int = 6):
+    def search(self, query: str, metadata: dict | None = None, top_k: int = 20):
         signal_parts = [query or ""]
         if metadata:
             for key, value in metadata.items():
@@ -192,5 +192,19 @@ class PolicyIndex:
         scored.sort(key=lambda pair: pair[1], reverse=True)
 
         threshold = 0.35
-        results = [(sec, s) for sec, s in scored if s > threshold]
+        qualifying = [(sec, s) for sec, s in scored if s > threshold]
+        if not qualifying:
+            return []
+
+        # Once a policy FILE is established as relevant (>=1 of its sections
+        # cleared the threshold on its own vocabulary), return every section
+        # of that file, not just the ones that happen to share words with
+        # this specific request. A quiet exception/exclusion clause (e.g. a
+        # refund policy's "Exceptions" section) can score near zero on pure
+        # keyword overlap yet be exactly the clause that governs the case —
+        # a human reviewer would read the whole relevant policy, not a
+        # keyword-curated fragment of it.
+        relevant_files = {sec.policy_file for sec, _ in qualifying}
+        results = [(sec, s) for sec, s in scored if sec.policy_file in relevant_files]
+        results.sort(key=lambda pair: pair[1], reverse=True)
         return results[:top_k]
