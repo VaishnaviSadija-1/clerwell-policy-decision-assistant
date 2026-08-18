@@ -10,7 +10,11 @@ from pydantic import ValidationError
 
 from backend.llm import LLMError
 from backend.models import AnalysisResult
-from backend.numeric_check import check_numeric_consistency
+from backend.numeric_check import (
+    check_approval_text_consistency,
+    check_decision_consistency,
+    check_numeric_consistency,
+)
 
 _FENCE_RE = re.compile(r"^```(?:json)?\s*(.*?)\s*```$", re.DOTALL | re.IGNORECASE)
 
@@ -62,7 +66,23 @@ Rules:
   is true, and may be empty otherwise.
 - confidence, if used, must be between 0 and 1.
 - If no excerpt actually answers the question, choose needs_information
-  rather than guessing."""
+  rather than guessing.
+- If the excerpts make a specific field a hard prerequisite before a
+  decision or approval can even be evaluated (for example a required
+  medical certificate, or a required receipt above a stated amount) and
+  that field is genuinely absent from the request, prefer
+  needs_information over requires_approval — do not describe what
+  approval would eventually be needed until that prerequisite is met.
+  Minor administrative gaps (like an exact date) do not require this.
+- Before listing anything in missing_information, re-read the request
+  text carefully. Do not list a field as missing if the request already
+  states it, even in different wording.
+- If the excerpts describe an explicit review or escalation pathway
+  (naming who reviews it) for a case that fails a standard rule,
+  classify that as requires_approval, not not_eligible.
+  not_eligible is only for cases the excerpts say must be refused or
+  must not proceed outright — never for a case that goes to human
+  review."""
 
 
 def _build_user_prompt(hits, request: dict) -> str:
@@ -101,7 +121,8 @@ def _build_repair_prompt(base_user: str, invalid_raw: str, error_text: str) -> s
 
 
 def _verify_evidence(result: AnalysisResult, index, request: dict):
-    """Two independent checks on the model's cited evidence:
+    """Four independent checks on the model's cited evidence, decision, and
+    approval text:
 
     1. Grounding — is the passage an exact, verbatim substring of the real
        policy file? (catches fabricated quotes)
@@ -109,9 +130,18 @@ def _verify_evidence(result: AnalysisResult, index, request: dict):
        ("above INR 50,000", "up to 3 consecutive working days", ...), does
        the request's actual figure really satisfy it? (catches the model
        citing a real sentence but misapplying its number to this request)
+    3. Decision consistency — does a ``not_eligible`` decision cite evidence
+       that itself describes a review/approval process rather than an
+       outright refusal? (catches conflating "needs human review" with
+       "flatly rejected")
+    4. Approval-text consistency — does approval.reason's own prose claim
+       approval IS required, while the decision forces approval.required
+       to false? (catches the structured field and the free text
+       contradicting each other)
 
-    Only passages that pass check 1 are eligible for check 2 — there's no
-    point numerically re-checking a quote that isn't even real.
+    Only passages that pass check 1 are eligible for checks 2 and 3 —
+    there's no point re-checking a quote that isn't even real. Check 4 is
+    independent of evidence entirely.
     """
     fabricated = [
         ev for ev in result.supporting_evidence
@@ -119,10 +149,15 @@ def _verify_evidence(result: AnalysisResult, index, request: dict):
     ]
     verified = [ev for ev in result.supporting_evidence if ev not in fabricated]
     numeric_problems = check_numeric_consistency(verified, request)
-    return fabricated, numeric_problems
+    decision_problems = check_decision_consistency(result.decision, verified)
+    text_problems = check_approval_text_consistency(
+        result.decision, result.approval.required, result.approval.reason
+    )
+    return fabricated, numeric_problems, decision_problems, text_problems
 
 
-def _build_verification_reask_prompt(base_user: str, fabricated, numeric_problems) -> str:
+def _build_verification_reask_prompt(base_user: str, fabricated, numeric_problems,
+                                     decision_problems=(), text_problems=()) -> str:
     parts = [base_user, "\n\n---\n"]
 
     if fabricated:
@@ -148,6 +183,31 @@ def _build_verification_reask_prompt(base_user: str, fabricated, numeric_problem
             "request's actual figures — re-check the arithmetic carefully "
             "against the request data:\n" + listed + "\n"
         )
+
+    if decision_problems:
+        listed = "\n".join(
+            f"- policy_file={p['policy_file']!r} passage={p['passage']!r}: "
+            f"{p['explanation']}"
+            for p in decision_problems
+        )
+        parts.append(
+            "Your decision was 'not_eligible', but the following cited "
+            "passage(s) describe a review/approval process rather than an "
+            "outright refusal — if the excerpts route this case to human "
+            "review, the correct decision is 'requires_approval', not "
+            "'not_eligible':\n" + listed + "\n"
+        )
+
+    if text_problems:
+        for p in text_problems:
+            parts.append(
+                f"Your approval.reason ({p['text']!r}) states that approval "
+                "is required, but your decision was not requires_approval, "
+                "which forces approval.required to false — this is "
+                "self-contradictory. If approval really is required, set "
+                "decision to requires_approval; otherwise remove the claim "
+                "that approval is required from approval.reason.\n"
+            )
 
     parts.append(
         "Return a corrected, single valid JSON object only, using only "
@@ -284,12 +344,16 @@ class Analyzer:
             fallback = _invalid_output_fallback(request_id)
             return {"ok": True, "result": fallback.model_dump()}
 
-        # -- evidence verification: grounding + numeric consistency -------
-        fabricated, numeric_problems = _verify_evidence(result, self.index, request)
+        # -- evidence verification: grounding + numeric + decision + text --
+        fabricated, numeric_problems, decision_problems, text_problems = _verify_evidence(
+            result, self.index, request
+        )
 
-        if fabricated or numeric_problems:
+        if fabricated or numeric_problems or decision_problems or text_problems:
             if calls_used < 2:
-                reask_user = _build_verification_reask_prompt(user, fabricated, numeric_problems)
+                reask_user = _build_verification_reask_prompt(
+                    user, fabricated, numeric_problems, decision_problems, text_problems
+                )
                 try:
                     raw3 = call_llm(reask_user)
                 except LLMError:
@@ -308,13 +372,17 @@ class Analyzer:
                     return {"ok": True, "result": fallback.model_dump()}
 
                 result = result2
-                fabricated, numeric_problems = _verify_evidence(result, self.index, request)
+                fabricated, numeric_problems, decision_problems, text_problems = _verify_evidence(
+                    result, self.index, request
+                )
 
-            if fabricated or numeric_problems:
+            if fabricated or numeric_problems or decision_problems or text_problems:
                 dump = result.model_dump()
-                bad_passages = {ev.passage for ev in fabricated} | {
-                    p["passage"] for p in numeric_problems
-                }
+                bad_passages = (
+                    {ev.passage for ev in fabricated}
+                    | {p["passage"] for p in numeric_problems}
+                    | {p["passage"] for p in decision_problems}
+                )
                 dump["supporting_evidence"] = [
                     ev for ev in dump["supporting_evidence"]
                     if ev["passage"] not in bad_passages

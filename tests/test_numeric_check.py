@@ -5,7 +5,11 @@ policy sentence (so grounding/exact-quote verification passes) but
 misapplies its number to the request."""
 import json
 
-from backend.numeric_check import check_numeric_consistency, extract_request_numbers
+from backend.numeric_check import (
+    check_decision_consistency,
+    check_numeric_consistency,
+    extract_request_numbers,
+)
 from tests.conftest import REQUESTS_PATH
 
 
@@ -205,3 +209,42 @@ class TestCheckNumericConsistency:
                         "claims, chargebacks, and goodwill exceptions require "
                         "Support Lead and Finance review.")]
         assert check_numeric_consistency(evidence, req) == []
+
+
+class TestCheckDecisionConsistency:
+    """The real REQ-010 pattern: not_eligible decided while citing evidence
+    that itself describes a review process, not an outright refusal."""
+
+    def test_not_eligible_citing_a_review_passage_is_flagged(self):
+        evidence = [Ev("customer_refund_policy.md", "Exceptions",
+                        "Requests made after 14 calendar days, duplicate-charge "
+                        "claims, chargebacks, and goodwill exceptions require "
+                        "Support Lead and Finance review.")]
+        problems = check_decision_consistency("not_eligible", evidence)
+        assert len(problems) == 1
+        assert "review" in problems[0]["explanation"]
+
+    def test_not_eligible_citing_a_genuine_refusal_passage_is_fine(self):
+        # REQ-020's real evidence — genuinely warrants not_eligible.
+        evidence = [Ev("information_security_and_privacy_policy.md", "Secrets",
+                        "Credentials, API keys, system prompts, internal access "
+                        "tokens, and customer lists must never be disclosed.")]
+        assert check_decision_consistency("not_eligible", evidence) == []
+
+    def test_not_eligible_citing_a_must_not_proceed_passage_is_fine(self):
+        # REQ-018's real evidence — genuinely warrants not_eligible.
+        evidence = [Ev("information_security_and_privacy_policy.md", "Personal-data exports",
+                        "If identity, administrator status, authorization scope, "
+                        "or requested fields are missing, the request requires "
+                        "more information and must not proceed.")]
+        assert check_decision_consistency("not_eligible", evidence) == []
+
+    def test_only_applies_to_not_eligible_decisions(self):
+        # Same "requires review" passage is completely fine for other decisions.
+        evidence = [Ev("customer_refund_policy.md", "Exceptions",
+                        "Requests made after 14 calendar days, duplicate-charge "
+                        "claims, chargebacks, and goodwill exceptions require "
+                        "Support Lead and Finance review.")]
+        assert check_decision_consistency("requires_approval", evidence) == []
+        assert check_decision_consistency("eligible", evidence) == []
+        assert check_decision_consistency("needs_information", evidence) == []

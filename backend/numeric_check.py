@@ -167,6 +167,73 @@ def extract_passage_comparisons(passage: str) -> list[dict]:
 # Step 3: cross-check each piece of cited evidence against the real request
 # ---------------------------------------------------------------------------
 
+_REQUIRES_REVIEW_RE = re.compile(r"requires?\s+.{0,60}?(approval|review)\b", re.IGNORECASE)
+
+
+def check_decision_consistency(decision: str, evidence: list) -> list[dict]:
+    """Catches a specific real-world inconsistency: the model decides
+    ``not_eligible`` while citing evidence that itself describes a review
+    or approval process ("...require Support Lead and Finance review"),
+    rather than an outright refusal. ``not_eligible`` means the excerpts
+    say the request must be refused/must not proceed — citing a "send this
+    to review" sentence to justify that is self-contradictory. Only checked
+    for ``not_eligible``; every other decision is left alone."""
+    if decision != "not_eligible":
+        return []
+    problems = []
+    for ev in evidence:
+        passage = ev.passage if hasattr(ev, "passage") else ev["passage"]
+        if _REQUIRES_REVIEW_RE.search(passage):
+            problems.append({
+                "policy_file": ev.policy_file if hasattr(ev, "policy_file") else ev["policy_file"],
+                "passage": passage,
+                "explanation": (
+                    "the cited passage describes a review/approval process, "
+                    "which is inconsistent with a not_eligible decision — "
+                    "not_eligible is only for cases the policy says must be "
+                    "refused or must not proceed outright"
+                ),
+            })
+    return problems
+
+
+_APPROVAL_CLAIM_PATTERNS = [
+    re.compile(r"\bapproval\b.{0,40}?\b(?:is|was|will be)\s+required\b", re.IGNORECASE),
+    re.compile(r"\brequires?\b.{0,40}?\bapproval\b", re.IGNORECASE),
+    re.compile(r"\bneeds?\b.{0,40}?\bapproval\b", re.IGNORECASE),
+]
+_NEGATION_BEFORE_RE = re.compile(r"\b(no|not|without|never|n't)\b[\w\s,-]{0,25}$", re.IGNORECASE)
+
+
+def check_approval_text_consistency(decision: str, approval_required: bool,
+                                    approval_reason: str) -> list[dict]:
+    """Catches a different real regression: the model's own approval.reason
+    prose says approval IS required ("Approval by reporting-manager is
+    required..."), while the decision isn't requires_approval — which
+    structurally forces approval.required to False. The prose and the
+    structured field then flatly disagree with each other."""
+    if approval_required or not approval_reason:
+        return []
+    for pattern in _APPROVAL_CLAIM_PATTERNS:
+        match = pattern.search(approval_reason)
+        if not match:
+            continue
+        preceding = approval_reason[:match.start()]
+        if _NEGATION_BEFORE_RE.search(preceding):
+            continue  # e.g. "no approval is required" -- not a contradiction
+        return [{
+            "field": "approval.reason",
+            "text": approval_reason,
+            "explanation": (
+                "approval.reason states that approval is required, but the "
+                f"decision is '{decision}' (not requires_approval), which "
+                "forces approval.required to false -- the prose and the "
+                "structured field contradict each other"
+            ),
+        }]
+    return []
+
+
 def check_numeric_consistency(evidence: list, request: dict) -> list[dict]:
     """``evidence`` is a list of Evidence-like objects/dicts with
     ``policy_file``/``section``/``passage``. Returns a list of problems —

@@ -182,6 +182,102 @@ class TestNumericConsistency:
             assert "above INR 50,000" not in ev["passage"]
 
 
+# ---------- decision consistency (not_eligible vs a review-pathway quote) ----------
+
+class TestDecisionConsistency:
+    """Reproduces the real REQ-010 pattern: the model decides not_eligible
+    while citing a real, verbatim passage that describes a review process
+    ('require Support Lead and Finance review'), not an outright refusal."""
+
+    WRONG_DECISION = valid_llm_response(
+        "REQ-010", "not_eligible",
+        summary="Refund request is ineligible; purchase was 18 days ago, "
+                "exceeding the 14-day window.",
+        evidence=[{
+            "policy_file": "customer_refund_policy.md",
+            "section": "Exceptions",
+            "passage": "Requests made after 14 calendar days, duplicate-charge "
+                        "claims, chargebacks, and goodwill exceptions require "
+                        "Support Lead and Finance review.",
+        }])
+
+    CORRECTED = valid_llm_response(
+        "REQ-010", "requires_approval",
+        summary="Refund request exceeds the 14-day window and is routed to "
+                "Support Lead and Finance review.",
+        evidence=[{
+            "policy_file": "customer_refund_policy.md",
+            "section": "Exceptions",
+            "passage": "Requests made after 14 calendar days, duplicate-charge "
+                        "claims, chargebacks, and goodwill exceptions require "
+                        "Support Lead and Finance review.",
+        }],
+        required=True, roles=["support_lead", "finance"], reason="Exceeds 14-day window.")
+
+    def test_not_eligible_with_review_evidence_triggers_reask_then_succeeds(self, analyzer_with):
+        llm = FakeLLM([self.WRONG_DECISION, self.CORRECTED])
+        out = analyzer_with(llm).analyze("REQ-010")
+        assert out["ok"] is True
+        assert len(llm.calls) == 2, "a not_eligible/review-evidence mismatch must trigger one re-ask"
+        assert out["result"]["decision"] == "requires_approval"
+
+    def test_persistent_mismatch_downgrades_safely(self, analyzer_with):
+        llm = FakeLLM([self.WRONG_DECISION, self.WRONG_DECISION])
+        out = analyzer_with(llm).analyze("REQ-010")
+        assert out["ok"] is True
+        result = out["result"]
+        assert result["decision"] == "needs_information"
+        assert result["approval"]["required"] is False
+
+
+# ---------- approval-text consistency (reason vs decision contradiction) ----------
+
+class TestApprovalTextConsistency:
+    """Reproduces a second real regression found via live testing: the
+    model's own approval.reason prose says approval IS required, while
+    decision='eligible' structurally forces approval.required to False."""
+
+    SELF_CONTRADICTORY = valid_llm_response(
+        "REQ-005", "eligible",
+        summary="Expense claim is eligible for processing.",
+        evidence=[{
+            "policy_file": "employee_expense_policy.md",
+            "section": "Approval thresholds",
+            "passage": "Expenses up to INR 5,000 require reporting-manager approval.",
+        }],
+        required=False, roles=[],
+        reason="Approval by reporting-manager is required per policy thresholds, "
+               "but that is a standard workflow step, not a prerequisite to "
+               "eligibility determination.")
+
+    CORRECTED = valid_llm_response(
+        "REQ-005", "requires_approval",
+        summary="Expense claim requires reporting-manager approval.",
+        evidence=[{
+            "policy_file": "employee_expense_policy.md",
+            "section": "Approval thresholds",
+            "passage": "Expenses up to INR 5,000 require reporting-manager approval.",
+        }],
+        required=True, roles=["reporting_manager"], reason="Amount is under INR 5,000.")
+
+    def test_contradiction_triggers_reask_then_succeeds(self, analyzer_with):
+        llm = FakeLLM([self.SELF_CONTRADICTORY, self.CORRECTED])
+        out = analyzer_with(llm).analyze("REQ-005")
+        assert out["ok"] is True
+        assert len(llm.calls) == 2, "a reason/decision contradiction must trigger one re-ask"
+        assert out["result"]["decision"] == "requires_approval"
+        assert out["result"]["approval"]["required"] is True
+
+    def test_persistent_contradiction_downgrades_safely(self, analyzer_with):
+        llm = FakeLLM([self.SELF_CONTRADICTORY, self.SELF_CONTRADICTORY])
+        out = analyzer_with(llm).analyze("REQ-005")
+        assert out["ok"] is True
+        result = out["result"]
+        assert result["decision"] == "needs_information"
+        assert result["approval"]["required"] is False
+        assert result["approval"]["reason"] == ""
+
+
 # ---------- invalid model output ----------
 
 class TestInvalidModelOutput:
