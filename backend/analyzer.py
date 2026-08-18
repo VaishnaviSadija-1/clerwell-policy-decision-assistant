@@ -10,6 +10,7 @@ from pydantic import ValidationError
 
 from backend.llm import LLMError
 from backend.models import AnalysisResult
+from backend.numeric_check import check_numeric_consistency
 
 _FENCE_RE = re.compile(r"^```(?:json)?\s*(.*?)\s*```$", re.DOTALL | re.IGNORECASE)
 
@@ -99,22 +100,62 @@ def _build_repair_prompt(base_user: str, invalid_raw: str, error_text: str) -> s
     )
 
 
-def _build_grounding_reask_prompt(base_user: str, fabricated_quotes) -> str:
-    listed = "\n".join(
-        f"- policy_file={q.policy_file!r} passage={q.passage!r}" for q in fabricated_quotes
-    )
-    return (
-        base_user
-        + "\n\n---\n"
-        + "Your previous response cited the following passage(s) that could "
-        "not be verified as an exact, verbatim quote from the cited policy "
-        "file (this is invalid — you may only quote text that literally "
-        "appears in the provided excerpts):\n"
-        + listed
-        + "\n\nReturn a corrected, single valid JSON object only, using only "
+def _verify_evidence(result: AnalysisResult, index, request: dict):
+    """Two independent checks on the model's cited evidence:
+
+    1. Grounding — is the passage an exact, verbatim substring of the real
+       policy file? (catches fabricated quotes)
+    2. Numeric consistency — if the passage states a numeric threshold
+       ("above INR 50,000", "up to 3 consecutive working days", ...), does
+       the request's actual figure really satisfy it? (catches the model
+       citing a real sentence but misapplying its number to this request)
+
+    Only passages that pass check 1 are eligible for check 2 — there's no
+    point numerically re-checking a quote that isn't even real.
+    """
+    fabricated = [
+        ev for ev in result.supporting_evidence
+        if not index.verify_passage(ev.policy_file, ev.passage)
+    ]
+    verified = [ev for ev in result.supporting_evidence if ev not in fabricated]
+    numeric_problems = check_numeric_consistency(verified, request)
+    return fabricated, numeric_problems
+
+
+def _build_verification_reask_prompt(base_user: str, fabricated, numeric_problems) -> str:
+    parts = [base_user, "\n\n---\n"]
+
+    if fabricated:
+        listed = "\n".join(
+            f"- policy_file={q.policy_file!r} passage={q.passage!r}" for q in fabricated
+        )
+        parts.append(
+            "Your previous response cited the following passage(s) that could "
+            "not be verified as an exact, verbatim quote from the cited policy "
+            "file (this is invalid — you may only quote text that literally "
+            "appears in the provided excerpts):\n" + listed + "\n"
+        )
+
+    if numeric_problems:
+        listed = "\n".join(
+            f"- policy_file={p['policy_file']!r} passage={p['passage']!r}: "
+            f"{p['explanation']}"
+            for p in numeric_problems
+        )
+        parts.append(
+            "Your previous response cited the following real policy passage(s), "
+            "but misapplied the numeric threshold stated in them to this "
+            "request's actual figures — re-check the arithmetic carefully "
+            "against the request data:\n" + listed + "\n"
+        )
+
+    parts.append(
+        "Return a corrected, single valid JSON object only, using only "
         "verbatim passages copied exactly from the policy excerpts supplied "
-        "above."
+        "above, and make sure any numeric threshold you cite is actually "
+        "satisfied by this request's real figures."
     )
+    return "\n".join(parts)
 
 
 def _strip_fences(raw: str) -> str:
@@ -243,15 +284,12 @@ class Analyzer:
             fallback = _invalid_output_fallback(request_id)
             return {"ok": True, "result": fallback.model_dump()}
 
-        # -- grounding verification -------------------------------------
-        fabricated = [
-            ev for ev in result.supporting_evidence
-            if not self.index.verify_passage(ev.policy_file, ev.passage)
-        ]
+        # -- evidence verification: grounding + numeric consistency -------
+        fabricated, numeric_problems = _verify_evidence(result, self.index, request)
 
-        if fabricated:
+        if fabricated or numeric_problems:
             if calls_used < 2:
-                reask_user = _build_grounding_reask_prompt(user, fabricated)
+                reask_user = _build_verification_reask_prompt(user, fabricated, numeric_problems)
                 try:
                     raw3 = call_llm(reask_user)
                 except LLMError:
@@ -270,23 +308,24 @@ class Analyzer:
                     return {"ok": True, "result": fallback.model_dump()}
 
                 result = result2
-                fabricated = [
-                    ev for ev in result.supporting_evidence
-                    if not self.index.verify_passage(ev.policy_file, ev.passage)
-                ]
+                fabricated, numeric_problems = _verify_evidence(result, self.index, request)
 
-            if fabricated:
+            if fabricated or numeric_problems:
                 dump = result.model_dump()
-                fabricated_dumps = [ev.model_dump() for ev in fabricated]
+                bad_passages = {ev.passage for ev in fabricated} | {
+                    p["passage"] for p in numeric_problems
+                }
                 dump["supporting_evidence"] = [
-                    ev for ev in dump["supporting_evidence"] if ev not in fabricated_dumps
+                    ev for ev in dump["supporting_evidence"]
+                    if ev["passage"] not in bad_passages
                 ]
                 dump["decision"] = "needs_information"
                 dump["approval"] = {"required": False, "approver_roles": [], "reason": ""}
                 note = (
-                    " One or more cited passages could not be verified against "
-                    "the policy text and were removed; this request needs "
-                    "manual review."
+                    " One or more cited passages could not be verified — either "
+                    "the quote was not found verbatim in the policy text, or its "
+                    "stated numeric threshold did not actually match the "
+                    "request's figures; this request needs manual review."
                 )
                 dump["summary"] = (dump.get("summary") or "").rstrip() + note
                 result = AnalysisResult(**dump)

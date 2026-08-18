@@ -131,6 +131,57 @@ class TestPassageGrounding:
         assert result["decision"] == "needs_information"
 
 
+# ---------- numeric consistency (real quote, misapplied number) ----------
+
+class TestNumericConsistency:
+    """Reproduces the real bug found during manual review: the model cites a
+    genuine, verbatim policy sentence (so grounding passes) but misapplies
+    its numeric threshold to the request — e.g. claiming REQ-009's INR
+    12,000 'exceeds' the INR 50,000 approval threshold, when 12,000 is well
+    under it. REQ-009's real amount (metadata.amount) is 12000."""
+
+    WRONG_MATH = valid_llm_response(
+        "REQ-009", "requires_approval",
+        summary="Refund exceeds the INR 50,000 approval threshold.",
+        evidence=[{
+            "policy_file": "customer_refund_policy.md",
+            "section": "Standard eligibility",
+            "passage": "An eligible refund above INR 50,000 requires Finance "
+                        "Manager approval.",
+        }],
+        required=True, roles=["finance_manager"], reason="Amount exceeds threshold.")
+
+    CORRECTED = valid_llm_response(
+        "REQ-009", "eligible",
+        summary="Refund is within the standard eligibility limits.",
+        evidence=[{
+            "policy_file": "customer_refund_policy.md",
+            "section": "Standard eligibility",
+            "passage": "An eligible refund up to INR 50,000 may be handled by "
+                        "Customer Support without additional approval.",
+        }])
+
+    def test_misapplied_threshold_triggers_reask_then_succeeds(self, analyzer_with):
+        llm = FakeLLM([self.WRONG_MATH, self.CORRECTED])
+        out = analyzer_with(llm).analyze("REQ-009")
+        assert out["ok"] is True
+        assert len(llm.calls) == 2, "a real-but-misapplied quote must trigger exactly one re-ask"
+        assert out["result"]["decision"] == "eligible"
+        # the re-ask prompt must explain the mismatch, not just say "invalid"
+        reask_prompt = llm.calls[1][1]
+        assert "12000" in reask_prompt or "12,000" in reask_prompt
+
+    def test_persistent_misapplication_downgrades_safely(self, analyzer_with):
+        llm = FakeLLM([self.WRONG_MATH, self.WRONG_MATH])
+        out = analyzer_with(llm).analyze("REQ-009")
+        assert out["ok"] is True
+        result = out["result"]
+        assert result["decision"] == "needs_information"
+        assert result["approval"]["required"] is False
+        for ev in result["supporting_evidence"]:
+            assert "above INR 50,000" not in ev["passage"]
+
+
 # ---------- invalid model output ----------
 
 class TestInvalidModelOutput:
